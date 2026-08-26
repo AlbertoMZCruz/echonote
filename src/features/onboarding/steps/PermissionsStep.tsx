@@ -4,18 +4,37 @@ import { Mic, Check } from "lucide-react";
 
 import { startStreaming, stopStreaming, getMeetingId, deleteMeeting } from "../../../ipc/client";
 
+type Status = "idle" | "checking" | "granted" | "denied" | "deferred";
+
+/** Backend errors arrive as a serialized `IpcError`; anything else is opaque. */
+function ipcErrorCode(err: unknown): string | null {
+  return typeof err === "object" && err !== null && "code" in err
+    ? String((err as { code: unknown }).code)
+    : null;
+}
+
+function ipcErrorMessage(err: unknown): string | null {
+  if (typeof err === "object" && err !== null && "message" in err) {
+    return String((err as { message: unknown }).message);
+  }
+  return typeof err === "string" ? err : null;
+}
+
 /**
  * Permissions step — attempts a very short streaming session to trigger
- * the macOS permission dialog. If it succeeds, permissions are granted.
- * If it fails with a permission error, we show a button to retry or
- * open System Settings.
+ * the macOS permission dialog. If it succeeds, the microphone is
+ * usable. A failure that is *not* about the microphone (no ASR model
+ * installed yet) is reported as deferred rather than denied, so the
+ * step never blames the user's audio setup for a backend problem.
  */
 export function PermissionsStep({ onNext }: Readonly<{ onNext: () => void }>) {
   const { t } = useTranslation();
-  const [status, setStatus] = useState<"idle" | "checking" | "granted" | "denied">("idle");
+  const [status, setStatus] = useState<Status>("idle");
+  const [detail, setDetail] = useState<string | null>(null);
 
   const checkPermissions = useCallback(async () => {
     setStatus("checking");
+    setDetail(null);
     try {
       // Wait for the "started" event before querying meetingId — the
       // recorder only populates the session→meeting mapping after
@@ -34,8 +53,12 @@ export function PermissionsStep({ onNext }: Readonly<{ onNext: () => void }>) {
       await stopStreaming(sessionId);
       if (meetingId) await deleteMeeting(meetingId).catch(() => {});
       setStatus("granted");
-    } catch {
-      setStatus("denied");
+    } catch (err) {
+      const code = ipcErrorCode(err);
+      // The probe runs a full streaming session, so it can fail for
+      // reasons that have nothing to do with audio access.
+      setStatus(code === "modelNotReady" ? "deferred" : "denied");
+      setDetail(ipcErrorMessage(err));
     }
   }, []);
 
@@ -44,9 +67,9 @@ export function PermissionsStep({ onNext }: Readonly<{ onNext: () => void }>) {
     checkPermissions();
   }, [checkPermissions]);
 
-  // Auto-advance when granted
+  // Auto-advance when granted or when the check could not run
   useEffect(() => {
-    if (status === "granted") {
+    if (status === "granted" || status === "deferred") {
       const timer = setTimeout(onNext, 800);
       return () => clearTimeout(timer);
     }
@@ -56,7 +79,7 @@ export function PermissionsStep({ onNext }: Readonly<{ onNext: () => void }>) {
     <div className="flex flex-1 flex-col items-center justify-center gap-8 px-8">
       {/* Microphone icon */}
       <div className={`flex h-16 w-16 items-center justify-center rounded-2xl transition-colors ${
-        status === "granted"
+        status === "granted" || status === "deferred"
           ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400"
           : status === "denied"
             ? "bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-400"
@@ -83,11 +106,20 @@ export function PermissionsStep({ onNext }: Readonly<{ onNext: () => void }>) {
           </div>
         )}
 
+        {status === "deferred" && (
+          <p className="max-w-sm text-ui-md text-content-secondary">
+            {t("onboarding.permissionsDeferred")}
+          </p>
+        )}
+
         {status === "denied" && (
           <>
             <p className="max-w-sm text-ui-md text-content-secondary">
               {t("onboarding.permissionsDenied")}
             </p>
+            {detail && (
+              <p className="max-w-sm break-words text-ui-sm text-content-tertiary">{detail}</p>
+            )}
             <div className="flex gap-3">
               <button
                 type="button"

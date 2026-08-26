@@ -10,6 +10,7 @@
 
 pub mod cpal_microphone;
 pub mod routing;
+pub mod stream_error;
 
 pub use cpal_microphone::CpalMicrophoneCapture;
 pub use routing::RoutingAudioCapture;
